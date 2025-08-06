@@ -1,0 +1,177 @@
+clc; clear all; close all;
+
+% ===== 1. Freq Response ===== %
+
+% 주파수 범위 설정 
+Freq_Range = 0.10:0.06:0.46; 
+
+% Freq_Range = [2.90, 3.00 , 3.10, 3.15 ,3.20, 3.30];
+N_Freq = length(Freq_Range) ; 
+
+% 주파수 반응 (Freq ; Gain ; Phase) 
+Freq_Response = zeros(3,N_Freq) ; 
+
+
+% 입/출력 Offset 고려
+OUT_eBias  = zeros(1,N_Freq) ; 
+IN_eBias   = zeros(1,N_Freq) ; 
+
+for idx = 1:N_Freq 
+    
+    File_Name = sprintf('../data/freq_response/Frequency_Response_%2.2fHz.out', Freq_Range(idx)) ; 
+
+    data = load(File_Name) ;
+
+    % 입력 전 Vs 무시 & 일정한 출력 시간 고려   
+    idxValid = find((data(:,1) > 0.5)); 
+
+    Time = data(idxValid,1) ;
+    Vss  = data(idxValid,2) ;
+    Vout = data(idxValid,4) ;
+
+    % F/V output at the nominal operating point 
+    Vss0  = 2.5  ; 
+    Vout0 =  1.408991  ; 
+    
+    % modifydation 
+    SysInp = inline('x(1)*sin(2*pi*fTime+x(2))+x(3)', 'x', 'fTime') ; 
+    SysOut = inline('x(1)*sin(2*pi*fTime+x(2))+x(3)', 'x', 'fTime') ; 
+   
+
+
+% [1.0;0;Vss0] = [크기 : 위상(처음에는-10, 30도 까지) : 바이어스 ((M-m)/2)]
+
+
+
+    x = lsqcurvefit(SysInp, [1.0;0;Vss0], Freq_Range(idx)*Time, Vss); 
+
+    IN_eMag       = x(1) ;  % [V]   : estimated magnitude of Vout 
+    IN_ePhs       = x(2) ;  % [rad] : estimated phase shift of Vout 
+    IN_eBias(idx) = x(3) ;  % [V]   : estimated value of Vout0 
+    
+
+    if( IN_eMag < 0.0 )  
+
+            IN_eMag = abs(IN_eMag) ; 
+            IN_ePhs = IN_ePhs + pi ; 
+
+    end 
+        
+    eVss = IN_eMag * sin(2*pi*Freq_Range(idx)*Time + IN_ePhs) + IN_eBias(idx); 
+
+
+% [1.0;0;Vss0] = [크기 ((M-m)/2): 위상(처음에는-10, 30도 까지) : 바이어스 ((M+m)/2)]
+
+    y = lsqcurvefit(SysOut, [1.2;0;Vout0], Freq_Range(idx)*Time, Vout) ; 
+    
+    OUT_eMag       = y(1) ; % [V]   : estimated magnitude of Vout 
+    OUT_ePhs       = y(2) ; % [rad] : estimated phase shift of Vout 
+    OUT_eBias(idx) = y(3) ; % [V]   : estimated value of Vout0 
+    
+
+    if( OUT_eMag < 0.0 )
+        
+        OUT_eMag = abs(OUT_eMag) ; 
+        OUT_ePhs = OUT_ePhs + pi ; 
+        
+    end 
+    
+    eVout = OUT_eMag*sin(2*pi*Freq_Range(idx)*Time+OUT_ePhs) + OUT_eBias(idx) ; 
+
+    Freq_Response(:,idx) = [Freq_Range(idx); OUT_eMag/IN_eMag ; asin(sin(OUT_ePhs-IN_ePhs))*180/pi] ; 
+
+end
+
+% 데이터 확인 
+
+figure ;
+semilogx((Freq_Response(1,:)), 20*log10(Freq_Response(2,:)));
+grid on;
+xlabel('frequency [Hz]');
+ylabel('magnitude [dB]');
+
+
+figure ;
+semilogx((Freq_Response(1,:)), Freq_Response(3,:));
+grid on ;
+xlabel('frequency [Hz]');
+ylabel('phase [deg]') 
+
+
+%% 
+
+% ===== 2. Transfer Function ===== %
+
+Freq_Model   = Freq_Response(2,:).*exp(1j*Freq_Response(3,:)*pi/180); % 주파수 응답
+Omega_Model  = Freq_Response(1,:)*2*pi ; % 주파수 (rad/s)
+
+Nnum = 0 ; % 분자의 차수
+Nden = 1 ; % 분모의 차수
+
+% 전달 함수 추정
+[num, den] = invfreqs(Freq_Model, Omega_Model, Nnum, Nden);
+Gm_s = tf(num,den);
+
+% Bode Plot 
+[mag,phase,wout] = bode(Gm_s); 
+
+
+% Mangnitude 비교
+figure; 
+semilogx(wout, 20*log10(squeeze(mag))), hold on; 
+semilogx(2*pi*Freq_Response(1,:), 20*log10(Freq_Response(2,:)),'rx');
+title('Magnitude Comparing') ; 
+xlim([0.01 1000]), ylim([-45 5]) ; 
+legend({'estimated', 'measured'}); 
+grid on ; 
+
+
+% Phase 비교
+figure; 
+semilogx(wout, squeeze(phase)), hold on ; 
+semilogx(2*pi*Freq_Response(1,:), Freq_Response(3,:),'rx'); 
+title('Phase Comparing') ; 
+xlim([0.01 1000]), ylim([-90 0]); 
+legend({'estimated', 'measured'}); 
+grid on ; 
+
+
+%% 
+
+% ===== 3. Model Validation  ===== %
+
+
+for idx = 1:N_Freq
+
+    File_Name = sprintf('../data/freq_response/Frequency_Response_%2.2fHz.out', Freq_Range(idx)) ; 
+
+    data = load(File_Name) ;
+
+    idxValid = find((data(:,1)>0.5)); 
+    Time = data(idxValid,1); 
+    Vss  = data(idxValid,2) ; 
+    Vout = data(idxValid,4) ; 
+
+    y = lsim(Gm_s, Vss-IN_eBias(idx), Time); 
+
+    figure ;  
+    plot(Time, Vout-OUT_eBias(idx), Time, y, 'r');
+    grid on, ylim([-1.0 1.0]), xlabel('time [sec]'), ylabel('response [V]')
+    legend({'true', 'model'}) ; 
+    title(sprintf('%2.2f [Hz]', Freq_Range(idx))) ; 
+    
+end
+
+
+%% 
+
+% ===== 4. 제어기 설계  ===== %
+
+% 
+% step(Gm_s); 
+% grid on ; 
+% info = stepinfo(Gm_s); 
+
+
+%8.433871035903140
+%2.781030578686456
